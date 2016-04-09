@@ -62,10 +62,12 @@ options:
         directories will be recursively deleted, and files or symlinks will be unlinked.
         If C(touch) (new in 1.4), an empty file will be created if the C(path) does not
         exist, while an existing file or directory will receive updated file access and
-        modification times (similar to the way `touch` works from the command line).
+        modification times (similar to the way `touch` works from the command line).  If
+        C(present), the file will be created if it does not exist.  If it does exist, no
+        change to the file will be made.
     required: false
     default: file
-    choices: [ file, link, directory, hard, touch, absent ]
+    choices: [ file, link, directory, hard, touch, absent, present ]
   src:
     required: false
     default: null
@@ -114,6 +116,9 @@ EXAMPLES = '''
 # create a directory if it doesn't exist
 - file: path=/etc/some_directory state=directory mode=0755
 
+# create a file, but don't modify it if it already exists
+- file: path=/etc/foo.conf state=present
+
 '''
 
 
@@ -159,7 +164,7 @@ def main():
 
     module = AnsibleModule(
         argument_spec = dict(
-            state = dict(choices=['file','directory','link','hard','touch','absent'], default=None),
+            state = dict(choices=['file','directory','link','hard','touch','absent','present'], default=None),
             path  = dict(aliases=['dest', 'name'], required=True),
             original_basename = dict(required=False), # Internal use only, for recursive ops
             recurse  = dict(default=False, type='bool'),
@@ -427,6 +432,29 @@ def main():
                 raise e
 
         module.exit_json(dest=path, changed=True, diff=diff)
+
+    elif state == 'present':
+        changed = False
+        if prev_state == 'absent':
+            changed = True
+            try:
+                open(path, 'w').close()
+            except OSError, e:
+                module.fail_json(path=path, msg='Error, could not create target: %s' % str(e))
+        # short-circuit for check mode
+        if module.check_mode:
+            module.exit_json(dest=path, changed=changed, diff=diff)
+        try:
+            changed |= module.set_fs_attributes_if_different(file_args, changed, diff)
+        except SystemExit, e:
+            if e.code:
+                # We take this to mean that fail_json() was called from
+                # somewhere in basic.py
+                if prev_state == 'absent':
+                    # If we just created the file we can safely remove it
+                    os.remove(path)
+            raise e
+        module.exit_json(dest=path, changed=changed, diff=diff)
 
     module.fail_json(path=path, msg='unexpected position reached')
 
